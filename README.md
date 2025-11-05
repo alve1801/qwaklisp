@@ -1,13 +1,29 @@
 # QWAK Lisp
 
-*QWAK* ("Qlosure With A K") is a dialect of Lisp largely inspired by Scheme.
+QWAK Lisp ("Qlosure With A K") is a minimal but usable implementation of a
+ custom Scheme dialect. So far it features a mostly usable interpreter, with a
+ bootstrapping compiler in the works (currently targeting a custom ISA,
+ emulator included).
+
+* Small - interpreter is ~600loc, entire project is ~1500loc
+* Usable - garbage collector and tail recursion make it efficient enough to run
+ realistic applications (like a self-hosting compiler)
+* Moddable - intentionally written to be simple (though not quite
+ style-conformant) and easily adaptable/embeddable in other projects. In
+ addition, I've written a [series of articles][lisp] on how it's built and how
+ it works.
+* Free - LGPLv3 licensed (regular GPL made little sense, considering SIOD also
+ uses the LGPL)
+
+[lisp]: https://avethenoul.neocities.org/lisp
+
 It started as a toy project to learn how to implement an interpreter, and it
 grew to be pretty useful, parts of it finding way into other projects of mine
 (like [SpaceCore][spc] and [ExBot][exbot]). My main goal was to make something
 small enough to be comprehensible and easily modifiable, yet good enough to
 be usable. ChickenScheme is 760kloc, ChibiScheme is just under 20kloc, and
 while they are both "efficient" at what they do, they are riddled with
-`defun`s for various features that are more distracting than useful, and
+`define`s for various features that are more distracting than useful, and
 neither of them is easy to grasp unless you already know how it works.
 Meanwhile, the entire QWAK source, including VM compiler, assembler, and
 emulator, Makefile, *and* the file with my freeform ramblings about error
@@ -16,19 +32,467 @@ codes and call conventions, still clocks in at 1500loc.
 [spc]: https://avethenoul.neocities.org/spc
 [exbot]: https://ivykingsley.itch.io/exhibotanist
 
-It is mainly implemented as an interpreter in C, although im toying around
-with a compiler targeted at a custom ISA. The compiler is written in QWAK and
-some assembly, the ISA is implemented as an assembler and emulator (also in
-this repo).
+I did not want to use my legal name for the copyright disclaimer. Instead, I
+ have provided a public key, and a list of signatures for all the relevant
+ files in the file `sig.asc`. The public key is also posted on
+ [my website][website].
 
-I have a [series of articles][lisp] describing the language, how it works, and
-how it's implemented. I am still in the process of bringing them up to date,
-this README is thus also correspondingly short.
+[website]: https://avethenoul.neocities.org
 
-[lisp]: https://avethenoul.neocities.org/lisp
+## Overview
 
-The contents of this repo are loosely licensed under CC-BY-NC-SA. I am reading
-up on the GPL, I do not foresee licensing to be an issue anytime soon, feel
-free to shoot me a mail or similar if you have questions, comments, or would
-like to use this somewhere (regardless of licensing - I'd love to hear about
-it!).
+`eval.c` is the 'main' file of this repo, containing the QWAK Lisp
+ interpreter.
+
+`comp.scm` contains a (partial) compiler for QWAK Lisp, written in QWAK Lisp,
+ and targeting a custom ISA (described towards the end of this file).
+ Likewise, its output is in a custom assembly, tailored to that architecture.
+
+`comp.asm` contains the assembly routines/libraries used by the compiler.
+
+`asm.c` is an assembler for aforementioned custom assembly.
+
+`vm.c` is an emulator for the ISA that the compiler targets.
+
+## Usage / Calling conventions
+
+The programs take the following arguments:
+	eval [INFILE] [DEBUG_LEVEL]
+	asm [INFILE] [OUTFILE] [DEBUG_LEVEL]
+	vm [INFILE] [DEBUG]
+
+If no `INFILE` is given, they take input from stdin. If no `OUTFILE` is given,
+ the assembler outputs to stdout (all others use stdout by default).
+
+Debug levels for `eval`:
+0. no debug information (default)
+1. basic debug information
+2. tailcall debug info
+3. GC debug info
+4. GC memory info (very verbose!)
+
+Debug levels for `asm`:
+0. no debug information (default)
+1. output label bindings after assembling
+2. label debug info
+
+The `vm` only has a single debug level, ie it only checks whether it has two
+ or more arguments. With debugs turned on, it prints information regarding the
+ current command at every execution step. This can be combined with the label
+ bindings as output by `asm <fname> 1` to figure out where the PC is. I am
+ planning on eventually implementing automatic import of debug labels so it
+ can do the above internally, but it's not a high priority task atm.
+
+## Changelog
+
+* first release:
+ - uploaded code
+* 2.4:
+ - introduced version numbering
+ - significantly improved README
+ - properly (re)licensed everything under LGPLv3
+ - fixes to `print` (didn't have depth argument, didn't return correctly)
+ - fixes to printmem/pprint (some formatting was ambiguous or incorrect)
+ - fixes to garbage collector (uncompacted guards weren't tested for)
+ - `nil` symbol wasn't properly recognized as an alias to the empty list
+ - vectors (mainly involved making sure gc behaves)
+ - added a builtin constref enum (autogenerated and badly formatted, but it
+   makes `evsing()` a *lot* more readable)
+ - changed the prompt characters
+ - new `type` builtin replaces various type-related predicates
+ - new `at` builtin handles lists, symbols, vectors, *and* strings
+
+---
+
+## Programmer model / Language description
+
+This is the part of this README concerned with the language being implemented
+ and how to use it, glossing over implementation details.
+
+### Syntax
+
+Being a dialect of Lisp, QWAK Lisp uses parentheses (<- these fellas ->) to
+ delimit lists. Individual objects inside lists are separated via whitespace.
+ Lists can contain more lists, symbols (sequences of characters that are not
+ parentheses or whitespace), numbers (symbols that contain only decimal
+ digits), or strings (anything between a pair of doublequotes (`"` <- these
+ fellas)). Numbers may also be entered by a number sign (`#` <- this fella)
+ followed by a single character, in which case the numeric ASCII value of that
+ character is inserted. Where applicable, the first object in a list is the
+ operator, the remaining ones are its arguments.
+
+Values can only be bound to symbols - meaning, numbers and strings are not
+ valid 'variable names'. The *values* of variables can be anything - if a
+ binding doesn't exist, a symbol evaluates to itself. QWAKlisp does not
+ *forbid* using non-symbol types as variable names - those bindings just never
+ get checked by the interpreter. Likewise, the names of builtin commands are
+ not reserved, and can be used as variable names - the interpreter is
+ structured to still recognize them correctly (meaning, they will always
+ behave as the correct builtins when used as operators), but can be used as
+ variables when passed as arguments (allowing for some *creative* program
+ structures).
+
+Lists are automatically terminated by a nil element. If you need to explicitly
+ specify an element as the last one in a list, this can be done by prefixing
+ it with a period (this fella -> `.`). Only one element is parsed after a
+ period, all subsequent ones are ignored.
+
+The apostrophe (this fella -> `'`) is parsed as an autoquote - in other words,
+ an expression of the form `'stuff` is automatically converted to
+ `(quote stuff)`. Quoting circumvents evaluation, meaning `'symbol` always
+ evaluates to the symbol itself, regardless of whether a binding exists.
+
+A semicolon (`;` <- this fella) that is not inside a symbol or string begins a
+ comment that lasts until the end of the current line. Note, a symbol
+ beginning with a semicolon is parsed as a semicolon!
+
+### Command list
+
+`nil/t` are builtin symbols representing the boolean values for false and
+ true. `nil` is treated as the empty list `()`, and any non-nil value is
+ considered to be true - `t` is the default one returned by comparison
+ operators. Note that `nil` is the only built-in symbol that does not follow
+ the binding convention explained above - it will *always* evaluate to the
+ empty list. Also, the interpreter is configured to recognize a call to nil as
+ an end of session.
+XXX removed 't, using #1
+
+`(defun VARNAME [VARVAL])`
+`(let ([(VARNAME [VARVAL])]...) [EXPR]...)`
+`(set VARNAME [VARVAL])`
+`defun/let/set` allow explicit control of variable bindings. `let` creates a
+ new temporary environment containing the bindings listed in its first
+ argument, and evaluates all remaining arguments in that environment. `defun`
+ adds a binding to the current environment, akin to `let` but modifying the
+ current environment instead of creating a new one. Note that `defun` *first*
+ creates the new binding, and *then* figures out its value. This way, the
+ binding itself is valid inside the body of `defun` (see the examples below).
+ Also note that if no value is specified for the new binding, it is
+ automatically bound to the empty list (since that is technically the value
+ that this would specify). `set` first checks whether a binding for the
+ desired variable already exists, and if so modifies it instead of creating a
+ new one (otherwise it behaves as `defun`). As temporary environments fall
+ through to their parent (meaning, if a variable is not found in the current
+ environment, the one it derived from is also checked), this means `set` can
+ *modify* bindings external to the current evaluation context. In other words,
+ it is an imperative operator, not a purely functional one.
+XXX behavior on missing value
+
+`(begin [EXPR]...)`
+`begin` introduces an expression *sequence*. In short, some primitives (`if`)
+ only take a single expression in a position where we'd like to have multiple.
+ `begin` bridges the gap by allowing us to list multiple expressions in its
+ body to be evaluated in sequence, and the value of the last one is returned.
+ In technical terms, this is necessary, since `set` is not a purely functional
+ operator, therefore we need an additional non-functional one to make it
+ cooperate with other builtins.
+
+`(lambda ([SYMB]... [. SYMB]) [EXPR]...)`
+`(macro  ([SYMB]... [. SYMB]) [EXPR]...)`
+`lambda/close/macro` allow for function definitions. The first argument of
+ `lambda` is a list of variable names that the arguments are to be bound to.
+ This list can be empty, and can optionally be terminated by a dotted pair -
+ all remaining arguments will be put in a list and bound to that symbol,
+ allowing for functions with variable argument count (see below). Internally,
+ `lambda`s are converted to calls to `close`, which also denotes the
+ environment that the function was defined in (it's a closure). This is
+ implemented as a call to a builtin primitive, yet is not intended to be used
+ in programs - hence I am mentioning it here, but not listing its syntax.
+ `macro` is implemented much like `lambda` (including the argument binding),
+ but does not evaluate its arguments, instead it evaluates the resulting
+ expression. In other words, calling a function defined via `macro` passes all
+ values to it unmodified, allowing the function to restructure them, then that
+ restructured expression is called. The syntax is somewhat unusual compared to
+ r5rs-style macros, but is a lot easier to implement, and not that much more
+ complicated to use.
+XXX `(lambda (. args) body)` eqv `(lambda args body)`
+
+`(if COND EXPR [EXPR])`
+`(cond [(COND [EXPR]...)]... [(() [EXPR]...)])`
+`(case EXPR [()]... [(() [EXPR]...)])`
+`(eq EXPR EXPR)`
+`if/cond/case` implement conditionals. `if` takes an expression as its first
+ argument, and if that expression evaluates to true (ie anything but the empty
+ list), it evaluates and returns its second argument. Otherwise, it evaluates
+ and returns its third argument (if none given, nil - like `defun`). `cond`
+ takes a list of conditionals - if their first element evaluates to true, it
+ evaluates and returns the rest of the conditional (not limited to a single
+ expression). If the first element of a list is the empty list, it is treated
+ as always true (instead of always false as it would be otherwise) - this
+ allows for a fallthrough case. If no conditional matches, it returns nil.
+ `case` evaluates its first argument - unlike `cond`, it checks whether the
+ first element of a conditional is equal to the value of that first element
+ (nil likewise a fallthrough.) `eq` takes two elements, and returns whether
+ they are identical - for list types, whether the two arguments refer to the
+ same location in memory (thus, the same behavior as the r5rs equivalent).
+
+`(atom EXPR)`
+`(num EXPR)`
+`(pair EXPR)`
+`atom/num/pair` return `t` if their argument is a symbol, number, or list.
+XXX ~~soon to be~~ already deprecated by ~~upcoming~~ `type` primfn
+
+`(type EXPR)`
+`type` returns an integer denoting the type of its argument, or nil if invalid.
+ Types are nil/list/number/symbol/vector/string, starting at 0.
+
+`(car EXPR)`
+`(cdr EXPR)`
+`car` returns the first element of its argument, `cdr` returns all but the
+ first. If there only is a single element in a list `cdr` returns the empty
+ list (since it is quite literally "all but the first element" in that list).
+ With the empty list as input, both return the empty list as well. Both also
+ assume their argument is a list - ie the interpreter might crash if not.
+
+`(cons EXPR EXPR)`
+`(list [EXPR]...)`
+`(quote VAL)`
+`cons` creates a list whose first element is the first argument, and the rest
+ is the second argument - the metaphorical counterpart to `car/cdr`. `list`
+ creates a list containing its arguments. `quote` returns its argument
+ unevaluated - in (most) other cases, arguments to functions are evaluated
+ before the functions are called.
+
+`(vec NUM)`
+`(vec-at VEC NUM)`
+`(vec-set VEC NUM VAL)`
+`vec` creates a vector of at least the specified length. A vector's length must
+ be specified at creation, and cannot be modified later. Vectors are less
+ flexible equivalents of lists that are much more efficient with memory usage.
+ Whereas lists are equivalent to binary linked lists, vectors are arrays with
+ built-in bounds checking. Unfortunately, due to the garbage collector, the
+ exact placement of vectors in memory can move around, requiring copying, but
+ in practice the number of copy cycles is limited by the call stack, and is
+ negligible for efficiency. `vec-at` returns the value at the given position in
+ the given vector, `vec-set` sets that value. Both return nil on failure.
+
+`(print EXPR [EXPR])`
+`(mem)`
+`print` prints its argument to stdout, with an optional argument specifying
+ the maximum recursion depth (by default 5). Usually, the only output are
+ return values to the global REPL. It also evaluates to its argument,
+ allowing it to be used inline. `mem` is likewise used mainly for debugging,
+ and outputs the entire internal state and memory of the interpreter -
+ probably of little use without understanding of how the interpreter handles
+ that data.
+
+`(+ [EXPR]...)`
+`(- EXPR [EXPR]...)`
+`(* [EXPR]...)`
+`(/ EXPR [EXPR]...)`
+`(% EXPR [EXPR]...)`
+`+-*/%` are mathematical primitives, performing the operations usually
+ associated with them on their operands. They all assume their arguments are
+ numeric. The non-associative ones require at least one argument, on which all
+ others are applied.
+
+* The following pertain to strings/IO, and are still experimental:
+
+`(itoa EXPR)`
+`(atoi EXPR)`
+`itoa/atoi` convert a number to a symbol and vice versa.
+
+`(str NUM)`
+`(str-at STR NUM)`
+`(str-set STR NUM VAL)`
+`str` allocates storage for a string of the length specified by its argument.
+ The garbage collector does not yet handle string memory, therefore this
+ memory will never get freed - this is still largely experimental. `str-at`
+ evaluates to the character in the string specified by its first argument, its
+ position specified by the second. `str-set` takes an additional argument,
+ allowing us to set the value of the character at that position. Strings are
+ assumed to be null-terminated ASCII (note, none of these functions handle the
+ null terminator - this is up to the user), individual characters are
+ therefore implemented as numbers. Note that the latter two can also be used
+ on symbols, although using `str-set` on builtins is... not advised.
+
+`(getc)`
+`(putc NUM)`
+`(seek NUM)`
+As I have not yet gotten around to properly implementing Scheme-style I/O
+ ports, QWAKlisp supports a temporary I/O buffer. `putc` writes a single
+ character to it, `getc` reads the next character, and `seek` repositions the
+ read/write head of the buffer (the other two autoadvance it) (there is
+ currently no support to check the location of the r/w head, as this whole
+ shebang is really not intended for a public release anyway). This buffer is
+ outputted to a file in the local directory called `coredump` upon
+ termination of the program.
+
+### Examples
+
+`"Hello, World!"`
+No prizes for guessing what this one does. It is a top-level string, which
+ works as an expression.
+
+`(print "Hello, World!")`
+Not immediately obvious, but this prints hw *twice* - once as a side effect of
+ the `print` operator, and once because the expression itself evaluates to
+ that string. XXX except no it doesnt, because print still evals to nil
+
+`(defun fac (lambda (x) ((eq x 0) 1 (* x (fac (- x 1))))))`
+This is the standard, naive implementation of the factorial function. Note how
+ the variable `fac` is valid inside the body of the expression that defines
+ it.
+
+```
+(defun fact (lambda (x)
+	(defun tail (lambda (x y) (if (eq x 0) y (tail (- x 1) (* y x)))))
+	(tail x 1)))```
+This is a tail-recursive version of the factorial function. Note how
+ environments can be nested to create bindings that are only valid inside other
+ bindings (more on that later).
+
+```
+(defun facty (lambda (x) ((lambda (f x y) (f f x y))
+	(lambda (tail x y) (if (eq x 0) y (tail tail (- x 1) (* y x)))) x 1)))```
+This is another tail-recursive version of the factorial function, using a
+ y-combinator to avoid the need for a new binding. Note how "the first element
+ in a list is the operation to be performed" does not imply that that
+ operation itself cannot be defined directly in place.
+
+`(defun tail (lambda (x . y) (if y y x)))`
+This is a function that returns all but the first of its arguments, or only
+ its first arguments if only one was given. It requires *at least* one
+ argument. Note how, since anything but the empty list is considered true (in
+ the boolean sense), the variable argument list itself can be used instead of
+ a conditional.
+
+`(defun tails (lambda (x . y) (if (eq y ()) x y)))`
+For clarity's sake, here's a version of the above that does not use the
+ boolean trick. Note that since no boolean negation operator exists, the order
+ of the conditionals is swapped.
+
+`(defun tale (lambda y (if y (if (cdr y) (cdr y) (car y)))))`
+This version uses the boolean trick, but can also be called with no arguments,
+ returning the empty list. Removing the first parameter of the function (`x`)
+ would result in `(lambda ( . y) etc)`, which is equivalent to and more
+ conveniently written as `(lambda y etc)`. Note how the outer conditional
+ only specifies an expression to evaluate if there *are* arguments -
+ otherwise, it returns nil.
+
+```
+(defun infix (macro (a b c) (list b a c)))
+(infix 2 + 3)```
+Macros are used much like lambdas, here an example for a macro that allows
+ simple infix notations. `list` is used to prevent premature evaluation of its
+ arguments - not ideal implementation-wise, but prevents evaluation until the
+ substitutions are done and the `macro` call has finished.
+
+```
+(defun oop-num (lambda (x)
+	(defun val (* 2 (+ 1 x)))
+	(lambda (op . args) (case op
+	('get val)
+	('set (set val (car args))) )))) ```
+As promised in the tail-recursive example, environments can be nested. Via
+ clever use of this (and closures), we can create objects that contain state
+ and can be passed around between functions. Please note how unlike all the
+ Java-descendent implementations nowadays, this tends closer to the 'message
+ passing' conceptualization of Smalltalk's ilk.
+
+
+
+---
+
+## Internal model / Language implementation
+
+This part of the README is concerned with the actual implementation of the
+ above. For a much longer and less serious overview and explanation, visit
+ [my website](https://avethenoul.neocities.org/lisp)
+
+XXX todo: finish this
+
+two memory regions - concells and strings
+- also technically output ig
+- memory limits
+three tagged types - concells, numbers, and strings
+- also technically garbage
+- concell special format (point to every *second*)
+encoding of nil
+encoding of builtin symbols
+garbage collector (brief overview)
+tailcalls
+
+- disabling gc?
+
+---
+
+vm description, endgoals (self-hosting repl) etc as a completely separate
+ project perhaps?
+
+## Assembly language
+technically its own thing
+16bit words, dynamic stacks, three (explicit) registers, shared space for
+ self-modifying code, no operands but we do have hack modes
+list cmds - jmp cmd get set and ior xor sft add sub swp out idk idc pop psh
+labels n stuff
+`out` modes are todo, also arg order, and i might reorder at some point
+
+The assembler and emulator are... not really part of the Lisp implementation?
+ However, the main end goal of this project is to create a self-hosting repl,
+ and it was easier to develop for a made-up architecture, so I put them here.
+
+The VM uses unsigned 16bit words internally. It has three explicit registers
+ (program counter, accumulator, and operand, memory-mapped to the first three
+ addresses), though some instructions take a reference to a memory cell to use
+ as a pseudo-register. Code and data share memory - in fact, a lot of
+ otherwise trivial operations require self-modifying code (also, jit repl when
+ I finally get around to the lisper). The instructions do not take operands -
+ any codes that are not instructions set the accumulator.
+
+The VM has the following instructions (encoded as 0xfff0..0xffff):
+- JMP sets the program counter to the value of the accumulator.
+- CND increments the program counter by two if the accumulator is not zero.
+- GET sets the accumulator to the value of the memory cell referenced by the operand register
+- SET sets the memory cell referenced by the operand register to the value of the accumulator
+- AND performs logical `and` of the accumulator and operand registers, storing the result in the accumulator
+- IOR performs logical `or` etc
+- XOR `xor` etc
+- SFT shifts the accumulator down by the third nibble of the operand (0x00f0), then up by its last nibble. See UXN's equivalent for more details.
+- ADD adds the value of the operand register to the accumulator (storing res in acc, etc etc)
+- SUB subtracts likewise
+- SWP swaps the values of the accumulator and operand registers
+- OUT currently outputs the value of the accumulator register (interpreted as an ascii value) to stdout
+- IDK and IDC are NOPs reserved for later use. Currently, the assembler outputs IDK for any unknown instructions.
+- POP interprets the operand register as a stack pointer, and pops said stack into the accumulator register (postdecrements operand register)
+- PSH like POP, but pushes to stack instead (preincrements operand register)
+XXX please format the above in lowercase but w/ appropriate markdown
+
+In addition to the above instructions, the assembler also supports the following:
+- `:[:alnum:]` creates a label for the current address. Labels can be any non-whitespaced alphanumeric sequence, including all digits. Note, this does not actually *set* the current address
+- `.[:alnum:]` inserts a reference to the given label. Ie, the value at the current address is the location of the label
+- `'[0-9]` inserts a decimal value. Can also use `'x[0-9a-f]` for hex, or `'b[01]` for binary
+- `"[^"]"` inserts the values between the quotation marks (interpreted as ASCII characters) into consecutive memory addresses. It does not currently support nested quotes - if desired, end the current string, insert the `'34` as decimal, then start a new string. Note, strings are also not automatically null-terminated.
+- `;` starts a comment until the next newline.
+
+
+
+
+
+
+## Limits
+- memory sizes
+- known bugs/quirks/etc
+- undefined behaviors
+
+## Todo
+- strings, heap memory management
+- io ports
+- `type` primfn
+- primfn arg checks
+
+- finish compiler/repl
+- Tridora compile target
+- implement label parsing in vm so it can automatically add labels to PC
+
+string stuff
+Yes, this does imply that you will have to do manual memory management in a
+ functional language. Yes, it is stupid and defeats the purpose a bit. I know.
+ Figuring out how to adapt the garbage collector to a heap-like memory without
+ having to completely overhaul everything is borderline impossible, so I
+ decided to do the easy thing first so I can access memory properly, and
+ figure out the fancy stuff later. I'd say "let's be grown-ups and take
+ responsibility for the great power that is direct memory access", but also,
+ the language is *already* imperative (`begin/set/vec-set`) and we've been
+ shutting our eyes and putting fingers in our ears about it anyway, so this
+ really isn't all that much worse.

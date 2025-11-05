@@ -1,7 +1,25 @@
-; builtin assembler routines and environment for compiled code
+; QWAK Lisp assembler routines for the compiler
+; Copyright (C) 2023-2025 Ave Tealeaf
+;
+; This file is part of QWAK Lisp.
+;
+; QWAK Lisp is free software: you can redistribute it and/or modify it under
+;  the terms of the GNU Lesser General Public License, version 3 or later, as
+;  published by the Free Software Foundation.
+;
+; This program is distributed in the hope that it will be useful, but WITHOUT
+;  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+;  FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License
+;  for more details.
+;
+; You should have received a copy of the GNU Lesser General Public License
+;  along with this program. If not, see <https://www.gnu.org/licenses/>. */
 
-; in prod: heap 32kb, stack after code
-.main '0 '0 :retval '0 :stp 'x1000 :csp 'x1000 :hap 'x2000 :smb '0
+
+
+; in prod: set heap to top of memory
+; XXX could call it `ret` instead of `retval` so it matches the mnemonics?
+.main '0 '0 :retval '0 :stp .end :csp .end :hap 'x2000
 
 :invarg '3 swp '0 jmp ; invalid argument
 
@@ -151,6 +169,7 @@
 	.stp swp pop swp 'x12 swp sft swp '1 add swp get
 	swp .retval swp set :b_cdr_ret '0 jmp
 
+; XXX make it use the hole list
 :malloc ; (... arg ret) - works, but looks a bit ugly
 	; note that this returns untagged address (multiple of 8)
 	.stp swp pop swp '6 add swp .malret swp set
@@ -163,6 +182,10 @@
 	.malinc swp '0 set ; reset increment
 	.hap swp get swp :malval '0 swp sub swp .hap swp set swp .retval swp set
 	:malret '0 jmp
+
+:free ; XXX oh, this one gon get *complicated*
+
+
 
 :makecons ; (... car cdr ret) - works
 	.stp swp pop swp '6 add swp .makecons_ret swp set
@@ -250,8 +273,8 @@
 
 ; ---
 
-;:sc_data '10 "compiler tests passed" '10 '0 :hw "Hello, World!" '10 '0
-:main ;'0 swp '0 jmp
-	;.stp swp '5 psh psh '2 psh  '0 swp get swp .stp swp psh .builtin_mlt jmp
-	;.retval swp get swp .stp swp psh
-	;'0 swp get swp .stp swp psh .printnum jmp '10 out
+:main
+	; init heap hole list - hardcode values for now
+	'x2000 swp '0 set
+	.end swp 'x2000 sub swp 'x1fff swp set
+	'x1ffe swp 'x2000 set

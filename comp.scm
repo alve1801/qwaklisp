@@ -1,12 +1,32 @@
-; metacircular lisp compiler ala ghuloum (attempt the second)
+; QWAK Lisp metacircular compiler
+; Copyright (C) 2023-2025 Ave Tealeaf
+;
+; This file is part of QWAK Lisp.
+;
+; QWAK Lisp is free software: you can redistribute it and/or modify it under
+;  the terms of the GNU Lesser General Public License, version 3 or later, as
+;  published by the Free Software Foundation.
+;
+; This program is distributed in the hope that it will be useful, but WITHOUT
+;  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+;  FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License
+;  for more details.
+;
+; You should have received a copy of the GNU Lesser General Public License
+;  along with this program. If not, see <https://www.gnu.org/licenses/>. */
 
 
 
 ; ~~~ compatibility redefines ~~~
 
-(defun eq? eq) (defun symb? atom) (defun num? num) (defun pair? pair)
-(defun set! set) (defun nil? (lambda (x) (eq x ()))) (defun 't 1)
-(defun vec? (lambda () ())) (defun clos? (lambda () ()))
+(defun nil?  (lambda (x) (eq (type x) 0)))
+(defun pair? (lambda (x) (eq (type x) 1)))
+(defun num?  (lambda (x) (eq (type x) 2)))
+(defun symb? (lambda (x) (eq (type x) 3)))
+(defun vec?  (lambda (x) (eq (type x) 4)))
+(defun str?  (lambda (x) (eq (type x) 5)))
+(defun clos? (lambda () ()))
+(defun eq? eq) (defun set! set) (defun 't 1)
 
 
 
@@ -41,21 +61,21 @@
 
 ; ~~~ io helpers ~~~
 
-(set! curloc 0)
-(set! getch (lambda () (set! curloc (+ curloc 1)) (read (- curloc 1))))
-(set! putch (lambda (val) (write curloc val) (set! curloc (+ curloc 1)) ()))
-(set! putstr (lambda (x) (defun f (lambda (at) (defun c (str-at x at))
-	(if (eq c 0) () (begin (putch c) (f (+ at 1)))))) (f 0) ))
-
+(set! putstr (lambda (x) (defun f (lambda (ind) (defun c (at x ind))
+	(if (eq c 0) () (begin (putc c) (f (+ ind 1)))))) (f 0) ))
 (set! emit-wrap (lambda (arg) (iters (lambda (x) (cond
-	((nil? x) ()) ((symb? x) (putstr x) (putch 32))
-	((num? x) (putch 39) (putstr (itoa x)) (putch 32))
-	((pair? x) (putch 40) (emit-wrap x) (putch 41))
+	((nil? x) ()) ((symb? x) (putstr x) (putc 32))
+	((str? x) (putstr x) (putc 32))
+	((num? x) (putc 39) (putstr (itoa x)) (putc 32))
+	((pair? x) (putc 40) (emit-wrap x) (putc 41))
 	)) arg) ()))
-(set! emit (lambda x (emit-wrap x) (putch 59) (putch 10)))
+(set! emit (lambda x (emit-wrap x) (putc 59) (putc 10)))
+
+;(emit '(a '(b 2 "cde") f)) (())
+
 (set! debug 't) ; whether to output helper comments
 (set! dpr (lambda x (if debug
-	(begin (putch 10) (emit-wrap x) (putch 59) (putch 10)))))
+	(begin (putc 10) (emit-wrap x) (putc 59) (putc 10)))))
 
 
 
@@ -140,7 +160,7 @@
 		(join (cdr x) (additem y (car x))) (additem y x)) y)))
 	(bsmb ; bulitin symbols XXX make sure we got all that comp supports!
 		'(t defun lambda cond eq? car cdr cons quote + - * / %
-		begin set! if case write read let close str str-at str-set
+		begin set! if case putc getc let close str str-at str-set
 		num? bool? nil? vec? str? clos? pair?))
 	(arglist (lambda (args) (lambda (opr . arg) (case opr
 		('add (set! args (additem args (car arg))))
@@ -373,6 +393,7 @@
 
 
 ; ~~~ test ~~~
+; should output 'd3'
 
 (comp '(let ((ack
 	(lambda (x y) (cond
